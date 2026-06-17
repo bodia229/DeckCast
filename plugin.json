@@ -1,0 +1,11 @@
+{
+  "name": "DeckCast",
+  "author": "bondarenkobogdan",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["media", "streaming", "utility"],
+    "description": "Второй экран на телефоне по локальной сети: видео уходит на телефон, звук играет в наушниках Steam Deck.",
+    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2e/Steam_Deck_logo.svg/512px-Steam_Deck_logo.svg.png"
+  }
+}

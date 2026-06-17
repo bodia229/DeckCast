@@ -1,0 +1,7 @@
+node_modules/
+*.map
+DeckCast.zip
+bin/__pycache__/
+bin/ffmpeg
+__pycache__/
+*.pyc

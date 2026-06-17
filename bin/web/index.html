@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DeckCast</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b0f17; color: #e8eef7; font-family: system-ui, sans-serif; }
+  header { padding: 14px 16px; font-weight: 600; font-size: 18px; background: #131a26; }
+  .wrap { padding: 12px 16px 28px; }
+  video { width: 100%; background: #000; border-radius: 12px; margin-top: 8px; }
+  .controls { display: flex; align-items: center; gap: 10px; margin: 12px 0; flex-wrap: wrap; }
+  label { font-size: 13px; opacity: .8; }
+  input[type=range] { flex: 1; min-width: 160px; }
+  .list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .vid { background: #1b2536; border: 1px solid #283549; color: #e8eef7;
+         padding: 12px 14px; border-radius: 10px; text-align: left; font-size: 15px; }
+  .vid:active { background: #243248; }
+  .hint { opacity: .6; font-size: 13px; margin-top: 10px; }
+  #status { font-size: 13px; opacity: .8; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>📺 DeckCast — второй экран</header>
+<div class="wrap">
+
+  <video id="player" controls playsinline muted></video>
+
+  <div class="controls">
+    <label>Синхрон звука: <span id="dval">1500</span> мс</label>
+    <input id="delay" type="range" min="0" max="4000" step="100" value="1500">
+  </div>
+  <div id="status">Выбери видео ниже 👇</div>
+
+  <div class="list" id="list"></div>
+  <div class="hint">Звук идёт в наушники Steam Deck. Двигай ползунок, если звук и картинка
+  не совпадают (больше = звук позже).</div>
+</div>
+
+<script src="mpegts.js"></script>
+<script>
+const player  = document.getElementById('player');
+const listEl  = document.getElementById('list');
+const status  = document.getElementById('status');
+const delayEl = document.getElementById('delay');
+const dval    = document.getElementById('dval');
+let current   = null;   // имя текущего файла
+let mp        = null;   // экземпляр mpegts.js
+
+delayEl.addEventListener('input', () => { dval.textContent = delayEl.value; });
+// при отпускании ползунка — перезапускаем поток с новой задержкой
+delayEl.addEventListener('change', () => { if (current) play(current); });
+
+function play(name) {
+  current = name;
+  status.textContent = 'Загрузка: ' + name;
+  if (mp) { mp.destroy(); mp = null; }
+  if (!window.mpegts || !mpegts.isSupported()) {
+    status.textContent = 'Браузер не поддерживает поток (нужен Chrome на Android).';
+    return;
+  }
+  const url = '/stream?file=' + encodeURIComponent(name) + '&delay=' + delayEl.value;
+  mp = mpegts.createPlayer({ type: 'mpegts', isLive: true, url },
+                           { liveBufferLatencyChasing: true, liveSync: true });
+  mp.attachMediaElement(player);
+  mp.load();
+  mp.play().then(() => status.textContent = '▶ ' + name).catch(()=>{});
+}
+
+async function loadList() {
+  try {
+    const r = await fetch('/list');
+    const j = await r.json();
+    listEl.innerHTML = '';
+    if (!j.videos.length) {
+      listEl.innerHTML = '<div class="hint">Папка с видео пуста. Положи файлы в ~/Videos на Деке.</div>';
+      return;
+    }
+    for (const name of j.videos) {
+      const b = document.createElement('button');
+      b.className = 'vid';
+      b.textContent = '🎬 ' + name;
+      b.onclick = () => play(name);
+      listEl.appendChild(b);
+    }
+  } catch (e) {
+    status.textContent = 'Не удалось получить список видео.';
+  }
+}
+loadList();
+</script>
+</body>
+</html>
