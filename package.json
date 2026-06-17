@@ -1,13 +1,17 @@
 {
   "name": "deckcast",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Второй экран Steam Deck на телефоне по локальной сети.",
   "type": "module",
   "scripts": {
     "build": "shx rm -rf dist && rollup -c",
     "watch": "rollup -c -w"
   },
-  "keywords": ["decky", "steamdeck", "streaming"],
+  "keywords": [
+    "decky",
+    "steamdeck",
+    "streaming"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@decky/rollup": "^1.0.1",
@@ -20,6 +24,7 @@
   },
   "dependencies": {
     "@decky/api": "^1.1.2",
-    "react-icons": "^5.3.0"
+    "react-icons": "^5.3.0",
+    "react-qr-code": "^2.2.0"
   }
 }

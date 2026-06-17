@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
 DeckCast — стримит видео с Steam Deck на телефон по локальной сети.
-Звук видео играет в наушниках, подключённых к Деку (через PulseAudio/PipeWire),
-а картинка уходит на телефон в браузер. Телефону приложение не нужно.
+Источник: либо файл из папки, либо ссылка (YouTube и т.п. через yt-dlp).
+Звук играет в наушниках Дека, картинка уходит на телефон в браузер.
 
-Запуск:  python3 server.py
-Потом на телефоне открой адрес, который покажет скрипт (например http://192.168.x.x:8777)
-
-Зависимости: только ffmpeg + стандартная библиотека Python (ничего не надо ставить через pip).
+Зависимости: ffmpeg (обязательно) + yt-dlp (для ссылок) + стандартная библиотека Python.
 """
 
 import os
@@ -21,12 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ─────────────────────────── Настройки ───────────────────────────
 PORT = 8777
-# Папка, откуда брать видео. Положи фильмы сюда (или поменяй путь).
 VIDEO_DIR = os.path.expanduser(os.environ.get("DECKCAST_VIDEO_DIR", "~/Videos"))
-# Путь к ffmpeg. Если ffmpeg не в системе — укажи путь к статическому бинарнику:
-#   DECKCAST_FFMPEG=/home/deck/deckcast/ffmpeg python3 server.py
 FFMPEG = os.environ.get("DECKCAST_FFMPEG", "ffmpeg")
-# Имя аудио-выхода в логах PulseAudio (просто метка)
+YTDLP = os.environ.get("DECKCAST_YTDLP", "yt-dlp")
 SINK_LABEL = "DeckCast"
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -35,7 +29,6 @@ VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts")
 
 
 def lan_ip():
-    """Определяем локальный IP Дека, чтобы показать пользователю адрес."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
@@ -49,37 +42,63 @@ def lan_ip():
 def list_videos():
     if not os.path.isdir(VIDEO_DIR):
         return []
-    out = []
-    for name in sorted(os.listdir(VIDEO_DIR)):
-        if name.lower().endswith(VIDEO_EXTS):
-            out.append(name)
-    return out
+    return [n for n in sorted(os.listdir(VIDEO_DIR)) if n.lower().endswith(VIDEO_EXTS)]
 
 
-def build_ffmpeg_cmd(path, delay_ms):
+def _net_input(link):
+    """Сетевой источник: переподключение при обрыве + чтение в реальном времени."""
+    return ["-reconnect", "1", "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5", "-re", "-i", link]
+
+
+def resolve_source(file_name, url):
     """
-    Один процесс ffmpeg делает сразу две вещи:
-      1) звук -> аудиовыход Дека (наушники) с задержкой delay_ms (для синхрона с телефоном)
-      2) видео -> поток MPEG-TS, который мы отдаём телефону по HTTP
+    Возвращает (input_args, audio_spec, video_spec) для ffmpeg.
+    - file_name: имя файла в VIDEO_DIR
+    - url: ссылка (YouTube и др.), разбирается через yt-dlp
     """
-    cmd = [
-        FFMPEG, "-hide_banner", "-loglevel", "warning",
-        "-re",                      # читать в реальном времени (как плеер)
-        "-i", path,
-    ]
-    # --- Аудио на Дек (наушники) ---
-    cmd += ["-map", "0:a?"]
+    if url:
+        # формат: видео<=720p + аудио, либо готовый муксированный поток
+        fmt = "bv*[height<=?720]+ba/b[height<=?720]/b"
+        try:
+            out = subprocess.run([YTDLP, "-f", fmt, "-g", url],
+                                 capture_output=True, text=True, timeout=40)
+        except FileNotFoundError:
+            raise RuntimeError("yt-dlp не найден — положи его в bin/ (см. README)")
+        links = [l for l in out.stdout.splitlines() if l.strip()]
+        if not links:
+            raise RuntimeError("yt-dlp не разобрал ссылку: " + (out.stderr.strip()[:180] or "?"))
+        if len(links) >= 2:
+            # отдельные потоки: первый — видео, второй — аудио
+            return (_net_input(links[0]) + _net_input(links[1]), "1:a", "0:v")
+        return (_net_input(links[0]), "0:a?", "0:v")
+
+    # локальный файл
+    path = os.path.join(VIDEO_DIR, file_name)
+    if not file_name or os.path.dirname(os.path.realpath(path)) != os.path.realpath(VIDEO_DIR):
+        raise RuntimeError("bad file")
+    if not os.path.isfile(path):
+        raise RuntimeError("no such video")
+    return (["-re", "-i", path], "0:a?", "0:v")
+
+
+def build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms):
+    """
+    Один ffmpeg: звук -> наушники Дека (с задержкой для синхрона),
+    видео -> поток MPEG-TS на телефон.
+    """
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "warning"] + input_args
+    # --- Звук на Дек ---
+    cmd += ["-map", a_spec]
     if delay_ms > 0:
-        # задержка звука, чтобы он совпал с картинкой на телефоне
         cmd += ["-filter:a", f"adelay={delay_ms}:all=1"]
     cmd += ["-f", "pulse", SINK_LABEL]
-    # --- Видео на телефон (MPEG-TS в stdout) ---
+    # --- Видео на телефон ---
     cmd += [
-        "-map", "0:v",
+        "-map", v_spec,
         "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
         "-pix_fmt", "yuv420p", "-g", "30", "-b:v", "6M",
-        # Хочешь аппаратное кодирование (легче для CPU)? Замени строку выше на:
-        #   "-c:v", "h264_vaapi", "-vaapi_device", "/dev/dri/renderD128", ...
+        # Аппаратное кодирование (легче для CPU): заменить строку выше на h264_vaapi
         "-f", "mpegts", "pipe:1",
     ]
     return cmd
@@ -87,7 +106,7 @@ def build_ffmpeg_cmd(path, delay_ms):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
-        pass  # тихо
+        pass
 
     def _send_file(self, path, ctype):
         try:
@@ -102,44 +121,40 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         route = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
 
-        if route == "/" or route == "/index.html":
+        if route in ("/", "/index.html"):
             return self._send_file(os.path.join(WEB_DIR, "index.html"), "text/html; charset=utf-8")
-
         if route == "/mpegts.js":
             return self._send_file(os.path.join(WEB_DIR, "mpegts.js"), "application/javascript")
-
         if route == "/list":
-            body = json.dumps({"videos": list_videos()}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
+            return self._send_json({"videos": list_videos()})
         if route == "/stream":
             return self._do_stream(qs)
-
         self.send_error(404)
 
     def _do_stream(self, qs):
-        name = (qs.get("file", [""])[0])
+        name = qs.get("file", [""])[0]
+        url = qs.get("url", [""])[0]
         delay_ms = int(qs.get("delay", ["1500"])[0])
-        path = os.path.join(VIDEO_DIR, name)
-        # защита от выхода за пределы папки
-        if not name or os.path.dirname(os.path.realpath(path)) != os.path.realpath(VIDEO_DIR):
-            self.send_error(400, "bad file")
-            return
-        if not os.path.isfile(path):
-            self.send_error(404, "no such video")
+        try:
+            input_args, a_spec, v_spec = resolve_source(name, url)
+        except RuntimeError as e:
+            self.send_error(400, str(e))
             return
 
-        cmd = build_ffmpeg_cmd(path, delay_ms)
+        cmd = build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr)
         self.send_response(200)
         self.send_header("Content-Type", "video/mp2t")
@@ -152,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
-            pass  # телефон закрыл вкладку
+            pass
         finally:
             proc.terminate()
             try:
@@ -163,18 +178,15 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     if shutil.which(FFMPEG) is None and not os.path.isfile(FFMPEG):
-        print(f"[!] ffmpeg не найден ('{FFMPEG}'). Установи ffmpeg или укажи путь через DECKCAST_FFMPEG.")
-        print("    На SteamOS проще всего положить рядом статический бинарник ffmpeg.")
+        print(f"[!] ffmpeg не найден ('{FFMPEG}'). См. README.")
     if not os.path.isfile(os.path.join(WEB_DIR, "mpegts.js")):
-        print("[!] web/mpegts.js не найден — телефон не сможет проиграть видео.")
-        print("    Запусти ./run.sh — он скачает библиотеку, либо скачай вручную (см. README).")
+        print("[!] web/mpegts.js не найден — телефон не проиграет видео.")
 
     ip = lan_ip()
     print("=" * 50)
     print("  DeckCast запущен!")
-    print(f"  Видео берём из: {VIDEO_DIR}")
+    print(f"  Видео из папки: {VIDEO_DIR}")
     print(f"  На телефоне открой:  http://{ip}:{PORT}")
-    print("  (телефон и Дек должны быть в одной Wi-Fi сети)")
     print("  Ctrl+C — остановить")
     print("=" * 50)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

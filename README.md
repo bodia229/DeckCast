@@ -13,7 +13,20 @@
    tar xf ff.tar.xz --strip-components=1 --wildcards '*/ffmpeg'
    chmod +x ffmpeg && rm ff.tar.xz
    ```
-3. Фильмы клади в `/home/deck/Videos`.
+3. **yt-dlp** (нужен для ссылок YouTube). Положи бинарник рядом с сервером:
+   ```bash
+   cd ~/homebrew/plugins/DeckCast/bin
+   curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp
+   chmod +x yt-dlp
+   ```
+4. Фильмы клади в `/home/deck/Videos`.
+
+## Два способа смотреть
+
+- **Ссылка (YouTube и т.п.)** — на странице телефона вставь ссылку в поле и нажми «Играть».
+- **Файл** — выбери видео из списка папки `~/Videos`.
+
+В обоих случаях картинка на телефоне, звук — в наушниках Деки.
 
 ## Установка плагина
 
