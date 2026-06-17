@@ -26,6 +26,7 @@ YTDLP = os.environ.get("DECKCAST_YTDLP", "yt-dlp")
 SINK_LABEL = "DeckCast"
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+VOL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "volume.txt")
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts")
 # ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,15 @@ def list_videos():
     if not os.path.isdir(VIDEO_DIR):
         return []
     return [n for n in sorted(os.listdir(VIDEO_DIR)) if n.lower().endswith(VIDEO_EXTS)]
+
+
+def read_volume():
+    """Желаемая громкость (0..1.5), её пишет панель Деки. По умолчанию 1.0."""
+    try:
+        with open(VOL_FILE) as f:
+            return max(0.0, min(1.5, float(f.read().strip())))
+    except Exception:
+        return 1.0
 
 
 # ─────────────────────────── YouTube ───────────────────────────
@@ -134,8 +144,14 @@ def start_deck_audio(ss, delay_ms):
         cmd = [FFMPEG, "-hide_banner", "-loglevel", "error"]
         cmd += _ss_prefix(ss)
         cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-i", _audio_url]
+        af = []
         if delay_ms > 0:
-            cmd += ["-filter:a", f"adelay={delay_ms}:all=1"]
+            af.append(f"adelay={delay_ms}:all=1")
+        vol = read_volume()
+        if abs(vol - 1.0) > 0.01:
+            af.append(f"volume={vol:.2f}")
+        if af:
+            cmd += ["-filter:a", ",".join(af)]
         cmd += ["-f", "pulse", SINK_LABEL]
         _audio_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         _audio_base_ss = ss
@@ -310,10 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             ss = float(qs.get("ss", ["0"])[0])
         except ValueError:
             ss = 0.0
-        try:
-            vol = float(qs.get("vol", ["1"])[0])
-        except ValueError:
-            vol = 1.0
+        vol = read_volume()
         try:
             height = int(qs.get("q", ["720"])[0])   # 0 = Авто
         except ValueError:

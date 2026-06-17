@@ -6,3 +6,4 @@ bin/ffmpeg
 bin/yt-dlp
 __pycache__/
 *.pyc
+bin/volume.txt

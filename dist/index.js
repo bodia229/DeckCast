@@ -2558,6 +2558,8 @@ const startSrv = callable("start");
 const stopSrv = callable("stop");
 const getStatus = callable("status");
 const setupDeps = callable("setup");
+const getVolume = callable("get_volume");
+const setVolume = callable("set_volume");
 function Content() {
     const [running, setRunning] = SP_REACT.useState(false);
     const [url, setUrl] = SP_REACT.useState("");
@@ -2565,16 +2567,26 @@ function Content() {
     const [ytdlp, setYtdlp] = SP_REACT.useState(true);
     const [busy, setBusy] = SP_REACT.useState(false);
     const [msg, setMsg] = SP_REACT.useState("");
+    const [vol, setVol] = SP_REACT.useState(100);
     const refresh = async () => {
         const s = await getStatus();
         setRunning(s.running);
         setUrl(s.url ?? `http://${s.ip}:8777`);
         setFfmpeg(s.ffmpeg);
         setYtdlp(s.ytdlp);
+        try {
+            const v = await getVolume();
+            setVol(v.volume);
+        }
+        catch (e) { }
     };
     SP_REACT.useEffect(() => {
         refresh();
     }, []);
+    const onVol = (v) => {
+        setVol(v);
+        setVolume(v).catch(() => { });
+    };
     const toggle = async () => {
         setBusy(true);
         setMsg("");
@@ -2610,7 +2622,7 @@ function Content() {
         }
     };
     const needSetup = !ffmpeg || !ytdlp;
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "DeckCast \u2014 \u0432\u0442\u043E\u0440\u043E\u0439 \u044D\u043A\u0440\u0430\u043D", children: [needSetup && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: install, children: "\u2B07 \u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u044B" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.7, width: "100%" }, children: ["ffmpeg: ", ffmpeg ? "✓" : "—", " \u00B7 yt-dlp: ", ytdlp ? "✓" : "—", " (\u043D\u0443\u0436\u0435\u043D \u0434\u043B\u044F \u0441\u0441\u044B\u043B\u043E\u043A)"] }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !ffmpeg, onClick: toggle, children: running ? "■ Остановить" : "▶ Запустить стрим" }) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.85, width: "100%" }, children: msg }) })), running && url && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", textAlign: "center", padding: "6px 0 2px" }, children: [SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.6, marginBottom: "6px" }, children: "\u041D\u0430\u0432\u0435\u0434\u0438 \u043A\u0430\u043C\u0435\u0440\u0443 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430:" }), SP_JSX.jsx("div", { style: { background: "#fff", padding: "10px", borderRadius: "10px", display: "inline-block" }, children: SP_JSX.jsx(QRCode, { value: url, size: 148 }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: {
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "DeckCast \u2014 \u0432\u0442\u043E\u0440\u043E\u0439 \u044D\u043A\u0440\u0430\u043D", children: [needSetup && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: install, children: "\u2B07 \u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u044B" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.7, width: "100%" }, children: ["ffmpeg: ", ffmpeg ? "✓" : "—", " \u00B7 yt-dlp: ", ytdlp ? "✓" : "—", " (\u043D\u0443\u0436\u0435\u043D \u0434\u043B\u044F \u0441\u0441\u044B\u043B\u043E\u043A)"] }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !ffmpeg, onClick: toggle, children: running ? "■ Остановить" : "▶ Запустить стрим" }) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.85, width: "100%" }, children: msg }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.SliderField, { label: "\uD83D\uDD0A \u0413\u0440\u043E\u043C\u043A\u043E\u0441\u0442\u044C \u0437\u0432\u0443\u043A\u0430 \u0432\u0438\u0434\u0435\u043E", value: vol, min: 0, max: 150, step: 5, showValue: true, valueSuffix: "%", onChange: onVol }) }), running && url && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", textAlign: "center", padding: "6px 0 2px" }, children: [SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.6, marginBottom: "6px" }, children: "\u041D\u0430\u0432\u0435\u0434\u0438 \u043A\u0430\u043C\u0435\u0440\u0443 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430:" }), SP_JSX.jsx("div", { style: { background: "#fff", padding: "10px", borderRadius: "10px", display: "inline-block" }, children: SP_JSX.jsx(QRCode, { value: url, size: 148 }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: {
                                 width: "100%",
                                 textAlign: "center",
                                 fontSize: "16px",

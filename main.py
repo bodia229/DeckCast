@@ -1,4 +1,5 @@
 import os
+import re
 import ssl
 import stat
 import shutil
@@ -16,6 +17,7 @@ BIN_DIR = os.path.join(PLUGIN_DIR, "bin")
 SERVER = os.path.join(BIN_DIR, "server.py")
 FFMPEG = os.path.join(BIN_DIR, "ffmpeg")
 YTDLP = os.path.join(BIN_DIR, "yt-dlp")
+VOL_FILE = os.path.join(BIN_DIR, "volume.txt")
 VIDEO_DIR = "/home/deck/Videos"
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts")
 
@@ -192,3 +194,51 @@ class Plugin:
         except Exception:
             vids = []
         return {"dir": VIDEO_DIR, "videos": vids}
+
+    # ── громкость звука DeckCast ───────────────────────────────────
+    def _pactl(self, args):
+        return subprocess.run(["pactl"] + args, env=self._env(),
+                              capture_output=True, text=True, timeout=5)
+
+    def _sink_inputs(self):
+        """Индексы PulseAudio-потоков с именем DeckCast (наш звук)."""
+        try:
+            out = self._pactl(["list", "sink-inputs"]).stdout
+        except Exception:
+            return [], ""
+        idxs = []
+        for b in out.split("Sink Input #")[1:]:
+            if "DeckCast" in b:
+                idxs.append(b.split("\n", 1)[0].strip())
+        return idxs, out
+
+    async def get_volume(self):
+        try:
+            with open(VOL_FILE) as f:
+                pct = int(round(float(f.read().strip()) * 100))
+        except Exception:
+            pct = 100
+        idxs, _ = self._sink_inputs()
+        return {"volume": pct, "playing": len(idxs) > 0}
+
+    async def set_volume(self, pct):
+        try:
+            pct = max(0, min(150, int(pct)))
+        except Exception:
+            pct = 100
+        # запомнить (чтобы применялось и после перезапуска ffmpeg при перемотке)
+        try:
+            with open(VOL_FILE, "w") as f:
+                f.write(str(pct / 100.0))
+        except Exception:
+            pass
+        # применить вживую к текущему звуку через pactl
+        applied = 0
+        idxs, _ = self._sink_inputs()
+        for i in idxs:
+            try:
+                self._pactl(["set-sink-input-volume", i, f"{pct}%"])
+                applied += 1
+            except Exception:
+                pass
+        return {"volume": pct, "applied": applied}

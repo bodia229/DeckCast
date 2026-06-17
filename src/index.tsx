@@ -2,6 +2,7 @@ import {
   ButtonItem,
   PanelSection,
   PanelSectionRow,
+  SliderField,
   staticClasses,
 } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
@@ -14,6 +15,8 @@ const startSrv = callable<[], { running: boolean; url: string | null; needs_setu
 const stopSrv = callable<[], { running: boolean }>("stop");
 const getStatus = callable<[], { running: boolean; url: string | null; ip: string; ffmpeg: boolean; ytdlp: boolean }>("status");
 const setupDeps = callable<[], { ffmpeg: boolean; ytdlp: boolean; error: string | null }>("setup");
+const getVolume = callable<[], { volume: number; playing: boolean }>("get_volume");
+const setVolume = callable<[number], { volume: number; applied: number }>("set_volume");
 
 function Content() {
   const [running, setRunning] = useState(false);
@@ -22,6 +25,7 @@ function Content() {
   const [ytdlp, setYtdlp] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>("");
+  const [vol, setVol] = useState(100);
 
   const refresh = async () => {
     const s = await getStatus();
@@ -29,11 +33,20 @@ function Content() {
     setUrl(s.url ?? `http://${s.ip}:8777`);
     setFfmpeg(s.ffmpeg);
     setYtdlp(s.ytdlp);
+    try {
+      const v = await getVolume();
+      setVol(v.volume);
+    } catch (e) {}
   };
 
   useEffect(() => {
     refresh();
   }, []);
+
+  const onVol = (v: number) => {
+    setVol(v);
+    setVolume(v).catch(() => {});
+  };
 
   const toggle = async () => {
     setBusy(true);
@@ -96,6 +109,19 @@ function Content() {
           <div style={{ fontSize: "13px", opacity: 0.85, width: "100%" }}>{msg}</div>
         </PanelSectionRow>
       )}
+
+      <PanelSectionRow>
+        <SliderField
+          label="🔊 Громкость звука видео"
+          value={vol}
+          min={0}
+          max={150}
+          step={5}
+          showValue={true}
+          valueSuffix="%"
+          onChange={onVol}
+        />
+      </PanelSectionRow>
 
       {running && url && (
         <>
