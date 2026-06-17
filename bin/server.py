@@ -53,7 +53,7 @@ def yt_search(query):
         capture_output=True, text=True, timeout=45,
     )
     if not out.stdout.strip():
-        raise RuntimeError(out.stderr.strip()[:160] or "пустой ответ yt-dlp")
+        raise RuntimeError(out.stderr.strip()[:400] or "пустой ответ yt-dlp")
     data = json.loads(out.stdout)
     res = []
     for e in data.get("entries", []):
@@ -109,7 +109,7 @@ def resolve_source(file_name, url, ss):
             raise RuntimeError("yt-dlp не найден — нажми «Установить компоненты»")
         links = [l for l in out.stdout.splitlines() if l.strip()]
         if not links:
-            raise RuntimeError("yt-dlp не разобрал ссылку: " + (out.stderr.strip()[:160] or "?"))
+            raise RuntimeError("yt-dlp не разобрал ссылку: " + (out.stderr.strip()[:400] or "?"))
         if len(links) >= 2:
             return (_net_input(links[0], ss) + _net_input(links[1], ss), "1:a", "0:v")
         return (_net_input(links[0], ss), "0:a?", "0:v")
@@ -187,13 +187,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self._send_json({"results": yt_search(q)})
             except Exception as e:
-                return self._send_json({"results": [], "error": str(e)[:160]}, 200)
+                return self._send_json({"results": [], "error": str(e)[:400]}, 200)
         if route == "/info":
             u = qs.get("url", [""])[0]
             try:
                 return self._send_json(yt_info(u))
             except Exception as e:
-                return self._send_json({"title": "", "duration": None, "error": str(e)[:160]}, 200)
+                return self._send_json({"title": "", "duration": None, "error": str(e)[:400]}, 200)
         if route == "/stream":
             return self._do_stream(qs)
         self.send_error(404)

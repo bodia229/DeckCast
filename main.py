@@ -21,7 +21,8 @@ VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts")
 
 # Steam Deck — x86_64. Берём готовые статические сборки.
 FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+# Самодостаточный бинарник (НЕ Python-скрипт) — не зависит от системного Python Деки.
+YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
 
 
 def _chmodx(path):
@@ -75,7 +76,10 @@ def _install_ffmpeg():
 
 
 def _install_ytdlp():
-    _download(YTDLP_URL, YTDLP)
+    # качаем во временный файл и атомарно заменяем — чтобы не побить рабочий бинарник
+    tmp = YTDLP + ".part"
+    _download(YTDLP_URL, tmp)
+    os.replace(tmp, YTDLP)
     _chmodx(YTDLP)
 
 
@@ -89,8 +93,9 @@ def _do_setup():
     except Exception as e:
         error = f"ffmpeg: {e}"
     try:
-        if not os.path.isfile(YTDLP):
-            _install_ytdlp()
+        # yt-dlp всегда обновляем (он маленький, а YouTube часто ломает старые версии).
+        # Нажатие кнопки повторно = обновить yt-dlp.
+        _install_ytdlp()
     except Exception as e:
         error = (error + " | " if error else "") + f"yt-dlp: {e}"
     return {

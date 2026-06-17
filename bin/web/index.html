@@ -45,26 +45,37 @@
   .hint { opacity: .55; font-size: 12px; margin-top: 8px; }
   #status { font-size: 13px; opacity: .85; margin: 6px 0; min-height: 18px; }
   details summary { cursor: pointer; opacity: .7; font-size: 13px; margin: 6px 0; }
+
+  /* Полноэкранный режим */
+  #stage:fullscreen { background: #000; display: flex; flex-direction: column;
+                      justify-content: center; padding: 0; }
+  #stage:fullscreen video { flex: 1; min-height: 0; height: auto; border-radius: 0; object-fit: contain; }
+  #stage:fullscreen .bar { margin: 0; padding: 6px 16px; }
+  #stage:fullscreen .seek { padding: 0 16px; }
+  #stage:fullscreen .ctl { padding: 4px 16px 10px; }
 </style>
 </head>
 <body>
 <header>📺 DeckCast — пульт второго экрана</header>
 <div class="wrap">
 
-  <video id="player" playsinline muted></video>
+  <div id="stage">
+    <video id="player" playsinline muted></video>
 
-  <!-- Пульт -->
-  <div class="bar">
-    <button class="pbtn" id="back">⏪</button>
-    <button class="pbtn main" id="play">▶</button>
-    <button class="pbtn" id="fwd">⏩</button>
-    <span class="time"><span id="cur">0:00</span> / <span id="dur">--:--</span></span>
-  </div>
-  <input type="range" id="seek" class="seek" min="0" max="1000" value="0">
+    <!-- Пульт -->
+    <div class="bar">
+      <button class="pbtn" id="back">⏪</button>
+      <button class="pbtn main" id="play">▶</button>
+      <button class="pbtn" id="fwd">⏩</button>
+      <span class="time"><span id="cur">0:00</span> / <span id="dur">--:--</span></span>
+      <button class="pbtn" id="fs" title="На весь экран">⛶</button>
+    </div>
+    <input type="range" id="seek" class="seek" min="0" max="1000" value="0">
 
-  <div class="ctl">
-    <label>🔊 Громкость</label>
-    <input type="range" id="vol" min="0" max="100" value="100">
+    <div class="ctl">
+      <label>🔊 Громкость</label>
+      <input type="range" id="vol" min="0" max="100" value="100">
+    </div>
   </div>
   <div id="status">Найди видео или вставь ссылку 👇</div>
 
@@ -189,6 +200,18 @@ async function fetchInfo(url) {
 $('play').onclick = togglePlay;
 $('back').onclick = () => seekTo(posNow() - 15);
 $('fwd').onclick  = () => seekTo(posNow() + 15);
+$('fs').onclick = toggleFullscreen;
+function toggleFullscreen() {
+  const st = $('stage');
+  if (document.fullscreenElement) {
+    if (document.exitFullscreen) document.exitFullscreen();
+    try { screen.orientation.unlock(); } catch (e) {}
+  } else if (st.requestFullscreen) {
+    st.requestFullscreen().then(() => {
+      try { screen.orientation.lock('landscape'); } catch (e) {}
+    }).catch(() => {});
+  }
+}
 seekEl.addEventListener('input', () => { seeking = true; curEl.textContent = fmt(+seekEl.value); });
 seekEl.addEventListener('change', () => { seeking = false; seekTo(+seekEl.value); });
 volEl.addEventListener('change', () => { if (playing) play(posNow()); });
