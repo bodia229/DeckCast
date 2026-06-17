@@ -9,7 +9,9 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: #0b0f17; color: #e8eef7; font-family: system-ui, sans-serif; }
   header { padding: 13px 16px; font-weight: 600; font-size: 17px; background: #131a26;
-           position: sticky; top: 0; z-index: 5; }
+           position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; }
+  header select { background: #0e1622; color: #e8eef7; border: 1px solid #283549;
+                  border-radius: 8px; padding: 6px 8px; font-size: 13px; }
   .wrap { padding: 10px 14px 32px; }
   video { width: 100%; background: #000; border-radius: 12px; display: block; margin-top: 4px; }
 
@@ -23,6 +25,7 @@
   .btn { background: #2563eb; border: none; color: #fff; padding: 12px 16px;
          border-radius: 10px; font-size: 15px; font-weight: 600; flex: none; }
   .btn:active { background: #1d4ed8; }
+  .btn[disabled] { opacity: .5; }
 
   .card { display: flex; gap: 10px; padding: 8px; border-radius: 10px; background: #141d2b;
           border: 1px solid #1f2a3c; margin-bottom: 8px; align-items: center; }
@@ -36,26 +39,34 @@
   .sec { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; opacity: .5; margin: 18px 0 8px; }
   .hint { opacity: .55; font-size: 12px; margin-top: 8px; }
   #status { font-size: 13px; opacity: .85; margin: 6px 0; min-height: 18px; }
+  .spin { display:inline-block; width:13px; height:13px; border:2px solid #2563eb; border-top-color:transparent;
+          border-radius:50%; animation: sp .8s linear infinite; vertical-align:-2px; margin-right:6px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
   details summary { cursor: pointer; opacity: .7; font-size: 13px; margin: 6px 0; }
 </style>
 </head>
 <body>
-<header>📺 DeckCast — второй экран</header>
+<header>
+  <span>📺 DeckCast</span>
+  <label style="font-size:12px;opacity:.8">Качество
+    <select id="q">
+      <option value="0">Авто</option>
+      <option value="1080">1080p</option>
+      <option value="720" selected>720p</option>
+      <option value="480">480p</option>
+    </select>
+  </label>
+</header>
 <div class="wrap">
 
-  <!-- Обычный плеер: встроенные кнопки браузера (пауза, перемотка, на весь экран) -->
   <video id="player" controls playsinline></video>
   <div id="status">Найди видео или вставь ссылку 👇</div>
 
   <!-- Поиск -->
   <div class="sec">Поиск на YouTube</div>
   <div class="search">
-    <input id="q" type="search" placeholder="Что посмотреть…" enterkeyhint="search">
+    <input id="q2" type="search" placeholder="Запрос или ссылка YouTube…" enterkeyhint="search">
     <button class="btn" id="go">Найти</button>
-  </div>
-  <div class="search">
-    <input id="url" type="url" inputmode="url" placeholder="…или вставь ссылку YouTube">
-    <button class="btn" id="playUrl">▶</button>
   </div>
   <div id="results"></div>
 
@@ -70,18 +81,22 @@
   </details>
 
   <div class="hint">Звук идёт в наушники Деки, картинка — здесь. Пауза/перемотка/на весь экран —
-  кнопки прямо на видео.</div>
+  кнопки прямо на видео. Экран телефона не гаснет во время просмотра.</div>
 </div>
 
 <script src="mpegts.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const player = $('player'), status = $('status');
-const delayEl = $('delay'), dval = $('dval');
+const delayEl = $('delay'), dval = $('dval'), qEl = $('q');
 
-let src = null;     // { url } | { file }
-let title = '';
-let mp = null;
+let src = null, title = '', mp = null, wakeLock = null;
+
+// ── запоминание настроек ──
+const LS = window.localStorage;
+delayEl.value = LS.getItem('dc_delay') || '1500';
+dval.textContent = delayEl.value;
+if (LS.getItem('dc_q') !== null) qEl.value = LS.getItem('dc_q');
 
 const fmt = (s) => {
   if (s == null || isNaN(s)) return '';
@@ -89,48 +104,62 @@ const fmt = (s) => {
   const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), x = s%60;
   return (h?h+':':'') + (h?String(m).padStart(2,'0'):m) + ':' + String(x).padStart(2,'0');
 };
+const setStatus = (txt, busy) => { status.innerHTML = (busy ? '<span class="spin"></span>' : '') + txt; };
+const looksLikeUrl = (s) => /^https?:\/\//i.test(s) || /youtu\.?be/i.test(s);
 
 function streamUrl() {
-  let q = 'delay=' + delayEl.value;
+  let q = 'delay=' + delayEl.value + '&q=' + qEl.value;
   if (src.url) q += '&url=' + encodeURIComponent(src.url);
   else q += '&file=' + encodeURIComponent(src.file);
   return '/stream?' + q;
 }
 
+// ── экран не гаснет ──
+async function keepAwake() {
+  try { if (navigator.wakeLock && !wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+async function releaseAwake() { try { if (wakeLock) { await wakeLock.release(); wakeLock = null; } } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !player.paused) keepAwake(); });
+player.addEventListener('play', keepAwake);
+player.addEventListener('pause', releaseAwake);
+
 function playSource(s, t) {
   src = s; title = t || (s.url ? 'ссылку' : s.file);
-  status.textContent = 'Загрузка: ' + title;
+  setStatus('Загрузка: ' + escapeHtml(title), true);
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (mp) { mp.destroy(); mp = null; }
-  if (!window.mpegts || !mpegts.isSupported()) {
-    status.textContent = 'Нужен Chrome на Android.'; return;
-  }
+  if (!window.mpegts || !mpegts.isSupported()) { setStatus('Нужен Chrome на Android.'); return; }
   mp = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: streamUrl() },
                            { liveBufferLatencyChasing: true, liveSync: true });
   mp.attachMediaElement(player);
-  mp.on(mpegts.Events.ERROR, () => status.textContent = 'Ошибка потока. Проверь ссылку / yt-dlp на Деке.');
+  mp.on(mpegts.Events.ERROR, () => setStatus('Ошибка потока. Проверь ссылку / yt-dlp на Деке.'));
   mp.load();
-  mp.play().then(() => status.textContent = '▶ ' + title).catch(()=>{});
+  mp.play().then(() => { setStatus('▶ ' + escapeHtml(title)); keepAwake(); }).catch(()=>{});
 }
 
-// смена синхрона — перезапустить поток
-delayEl.addEventListener('input', () => dval.textContent = delayEl.value);
+// смена качества/синхрона — перезапустить поток
+delayEl.addEventListener('input', () => { dval.textContent = delayEl.value; LS.setItem('dc_delay', delayEl.value); });
 delayEl.addEventListener('change', () => { if (src) playSource(src, title); });
+qEl.addEventListener('change', () => { LS.setItem('dc_q', qEl.value); if (src) playSource(src, title); });
 
 // поиск / ссылка
-$('go').onclick = doSearch;
-$('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
-$('playUrl').onclick = () => { const u = $('url').value.trim(); if (u) playSource({ url: u }); };
+$('go').onclick = onSubmit;
+$('q2').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSubmit(); });
+function onSubmit() {
+  const v = $('q2').value.trim();
+  if (!v) return;
+  if (looksLikeUrl(v)) { playSource({ url: v }); $('results').innerHTML = ''; }
+  else doSearch(v);
+}
 
-async function doSearch() {
-  const q = $('q').value.trim();
-  if (!q) return;
-  status.textContent = 'Ищу: ' + q + ' …';
+async function doSearch(q) {
+  setStatus('Ищу: ' + escapeHtml(q) + ' …', true);
+  $('go').disabled = true;
   $('results').innerHTML = '';
   try {
     const j = await (await fetch('/search?q=' + encodeURIComponent(q))).json();
-    if (j.error) { status.textContent = 'Поиск: ' + j.error; return; }
-    status.textContent = 'Найдено: ' + j.results.length;
+    if (j.error) { setStatus('Поиск: ' + escapeHtml(j.error)); return; }
+    setStatus('Найдено: ' + j.results.length);
     const box = $('results');
     for (const v of j.results) {
       const el = document.createElement('div');
@@ -142,7 +171,8 @@ async function doSearch() {
       el.onclick = () => playSource({ url: 'https://www.youtube.com/watch?v=' + v.id }, v.title);
       box.appendChild(el);
     }
-  } catch (e) { status.textContent = 'Не удалось выполнить поиск.'; }
+  } catch (e) { setStatus('Не удалось выполнить поиск.'); }
+  finally { $('go').disabled = false; }
 }
 function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 

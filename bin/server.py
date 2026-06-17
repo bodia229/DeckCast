@@ -98,10 +98,11 @@ def _net_input(link, ss):
                              "-reconnect_delay_max", "5", "-re", "-i", link]
 
 
-def resolve_source(file_name, url, ss):
+def resolve_source(file_name, url, ss, height):
     """Возвращает (input_args, audio_spec, video_spec) для ffmpeg."""
     if url:
-        fmt = "bv*[height<=?720]+ba/b[height<=?720]/b"
+        cap = height if height and height > 0 else 1080  # 0 = Авто (до 1080p)
+        fmt = f"bv*[height<=?{cap}]+ba/b[height<=?{cap}]/b"
         try:
             out = subprocess.run([YTDLP, "-f", fmt, "-g", url],
                                  capture_output=True, text=True, timeout=45)
@@ -122,7 +123,7 @@ def resolve_source(file_name, url, ss):
     return (_ss_prefix(ss) + ["-re", "-i", path], "0:a?", "0:v")
 
 
-def build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms, vol):
+def build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms, vol, vbitrate):
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "warning"] + input_args
     # --- Звук на Дек (задержка для синхрона + громкость) ---
     cmd += ["-map", a_spec]
@@ -138,7 +139,7 @@ def build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms, vol):
     cmd += [
         "-map", v_spec,
         "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-        "-pix_fmt", "yuv420p", "-g", "30", "-b:v", "6M",
+        "-pix_fmt", "yuv420p", "-g", "30", "-b:v", vbitrate,
         "-f", "mpegts", "pipe:1",
     ]
     return cmd
@@ -210,14 +211,19 @@ class Handler(BaseHTTPRequestHandler):
             vol = float(qs.get("vol", ["1"])[0])
         except ValueError:
             vol = 1.0
+        try:
+            height = int(qs.get("q", ["720"])[0])   # 0 = Авто
+        except ValueError:
+            height = 720
+        vbitrate = {480: "2500k", 720: "5M", 1080: "8M", 0: "8M"}.get(height, "5M")
 
         try:
-            input_args, a_spec, v_spec = resolve_source(name, url, ss)
+            input_args, a_spec, v_spec = resolve_source(name, url, ss, height)
         except RuntimeError as e:
             self.send_error(400, str(e))
             return
 
-        cmd = build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms, vol)
+        cmd = build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms, vol, vbitrate)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr)
         self.send_response(200)
         self.send_header("Content-Type", "video/mp2t")
