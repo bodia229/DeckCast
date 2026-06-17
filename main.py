@@ -1,4 +1,5 @@
 import os
+import ssl
 import stat
 import shutil
 import socket
@@ -28,9 +29,27 @@ def _chmodx(path):
     os.chmod(path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _ssl_context():
+    # Проверку сертификата НЕ отключаем. На Деке окружение плагина не находит
+    # CA-бандл по умолчанию (ssl: certificate_verify_failed) — явно указываем
+    # на системный набор сертификатов SteamOS.
+    for ca in (
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+    ):
+        if os.path.isfile(ca):
+            try:
+                return ssl.create_default_context(cafile=ca)
+            except Exception:
+                pass
+    return ssl.create_default_context()
+
+
 def _download(url, dest):
+    ctx = _ssl_context()
     req = urllib.request.Request(url, headers={"User-Agent": "DeckCast"})
-    with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f:
+    with urllib.request.urlopen(req, timeout=180, context=ctx) as r, open(dest, "wb") as f:
         shutil.copyfileobj(r, f)
 
 
