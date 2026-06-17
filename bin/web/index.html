@@ -15,8 +15,12 @@
   .wrap { padding: 10px 14px 32px; }
   video { width: 100%; background: #000; border-radius: 12px; display: block; margin-top: 4px; }
 
-  .ctl { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
-  .ctl label { font-size: 12px; opacity: .7; min-width: 110px; }
+  .sync { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 13px; }
+  .sync label { opacity: .8; }
+  .sync .val { font-variant-numeric: tabular-nums; min-width: 70px; text-align: center; }
+  .nudge { background: #1b2536; border: 1px solid #283549; color: #e8eef7;
+           padding: 7px 10px; border-radius: 8px; font-size: 13px; }
+  .nudge:active { background: #243248; }
   input[type=range] { width: 100%; accent-color: #2563eb; }
 
   .search { display: flex; gap: 8px; margin: 6px 0; }
@@ -37,12 +41,12 @@
   .card .c { font-size: 12px; opacity: .6; margin-top: 3px; }
 
   .sec { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; opacity: .5; margin: 18px 0 8px; }
-  .hint { opacity: .55; font-size: 12px; margin-top: 8px; }
+  .hint { opacity: .55; font-size: 12px; margin-top: 6px; }
   #status { font-size: 13px; opacity: .85; margin: 6px 0; min-height: 18px; }
   .spin { display:inline-block; width:13px; height:13px; border:2px solid #2563eb; border-top-color:transparent;
           border-radius:50%; animation: sp .8s linear infinite; vertical-align:-2px; margin-right:6px; }
   @keyframes sp { to { transform: rotate(360deg); } }
-  details summary { cursor: pointer; opacity: .7; font-size: 13px; margin: 6px 0; }
+  details summary { cursor: pointer; opacity: .7; font-size: 13px; margin: 14px 0 6px; }
 </style>
 </head>
 <body>
@@ -62,6 +66,16 @@
   <video id="player" controls playsinline></video>
   <div id="status">Найди видео или вставь ссылку 👇</div>
 
+  <!-- Синхрон звука: кнопки точной подгонки + ползунок -->
+  <div class="sync">
+    <label>🔉 Синхрон</label>
+    <button class="nudge" id="dminus">−100</button>
+    <span class="val"><span id="dval">800</span> мс</span>
+    <button class="nudge" id="dplus">+100</button>
+  </div>
+  <input type="range" id="delay" min="0" max="3000" step="50" value="800">
+  <div class="hint">Звук отстаёт от картинки — увеличь. Опережает — уменьши.</div>
+
   <!-- Поиск -->
   <div class="sec">Поиск на YouTube</div>
   <div class="search">
@@ -71,17 +85,9 @@
   <div id="results"></div>
 
   <details>
-    <summary>⚙️ Синхрон звука и файлы на Деке</summary>
-    <div class="ctl">
-      <label>Синхрон: <span id="dval">1500</span> мс</label>
-      <input type="range" id="delay" min="0" max="4000" step="100" value="1500">
-    </div>
-    <div class="sec">Файлы из папки Деки</div>
+    <summary>📂 Файлы из папки Деки</summary>
     <div id="list"></div>
   </details>
-
-  <div class="hint">Звук идёт в наушники Деки, картинка — здесь. Пауза/перемотка/на весь экран —
-  кнопки прямо на видео. Экран телефона не гаснет во время просмотра.</div>
 </div>
 
 <script src="mpegts.js"></script>
@@ -90,11 +96,11 @@ const $ = (id) => document.getElementById(id);
 const player = $('player'), status = $('status');
 const delayEl = $('delay'), dval = $('dval'), qEl = $('q');
 
-let src = null, title = '', mp = null, wakeLock = null;
+let src = null, title = '', mp = null, wakeLock = null, reloadTimer = null;
 
 // ── запоминание настроек ──
 const LS = window.localStorage;
-delayEl.value = LS.getItem('dc_delay') || '1500';
+delayEl.value = LS.getItem('dc_delay') || '800';
 dval.textContent = delayEl.value;
 if (LS.getItem('dc_q') !== null) qEl.value = LS.getItem('dc_q');
 
@@ -129,18 +135,40 @@ function playSource(s, t) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (mp) { mp.destroy(); mp = null; }
   if (!window.mpegts || !mpegts.isSupported()) { setStatus('Нужен Chrome на Android.'); return; }
-  mp = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: streamUrl() },
-                           { liveBufferLatencyChasing: true, liveSync: true });
+  mp = mpegts.createPlayer(
+    { type: 'mpegts', isLive: true, url: streamUrl() },
+    {                                   // низкая задержка на телефоне
+      isLive: true,
+      enableStashBuffer: false,
+      stashInitialSize: 128,
+      liveBufferLatencyChasing: true,
+      liveBufferLatencyMaxLatency: 1.2,
+      liveBufferLatencyMinRemain: 0.3,
+      lazyLoad: false,
+    });
   mp.attachMediaElement(player);
   mp.on(mpegts.Events.ERROR, () => setStatus('Ошибка потока. Проверь ссылку / yt-dlp на Деке.'));
   mp.load();
   mp.play().then(() => { setStatus('▶ ' + escapeHtml(title)); keepAwake(); }).catch(()=>{});
 }
 
-// смена качества/синхрона — перезапустить поток
+// перезапуск потока с небольшой задержкой (чтобы частые нажатия не плодили потоки)
+function reloadSoon() {
+  if (!src) return;
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => playSource(src, title), 350);
+}
+function setDelay(v) {
+  v = Math.max(0, Math.min(3000, v));
+  delayEl.value = v; dval.textContent = v; LS.setItem('dc_delay', v);
+}
+
+// ── синхрон ──
+$('dminus').onclick = () => { setDelay(+delayEl.value - 100); reloadSoon(); };
+$('dplus').onclick  = () => { setDelay(+delayEl.value + 100); reloadSoon(); };
 delayEl.addEventListener('input', () => { dval.textContent = delayEl.value; LS.setItem('dc_delay', delayEl.value); });
-delayEl.addEventListener('change', () => { if (src) playSource(src, title); });
-qEl.addEventListener('change', () => { LS.setItem('dc_q', qEl.value); if (src) playSource(src, title); });
+delayEl.addEventListener('change', reloadSoon);
+qEl.addEventListener('change', () => { LS.setItem('dc_q', qEl.value); reloadSoon(); });
 
 // поиск / ссылка
 $('go').onclick = onSubmit;

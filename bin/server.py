@@ -140,6 +140,9 @@ def build_ffmpeg_cmd(input_args, a_spec, v_spec, delay_ms, vol, vbitrate):
         "-map", v_spec,
         "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
         "-pix_fmt", "yuv420p", "-g", "30", "-b:v", vbitrate,
+        # низкая задержка: без B-кадров, без буферизации мукса, сразу слать пакеты
+        "-bf", "0", "-flags", "+low_delay",
+        "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "1",
         "-f", "mpegts", "pipe:1",
     ]
     return cmd
