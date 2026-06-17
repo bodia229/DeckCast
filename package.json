@@ -1,6 +1,6 @@
 {
   "name": "deckcast",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Второй экран Steam Deck на телефоне по локальной сети.",
   "type": "module",
   "scripts": {

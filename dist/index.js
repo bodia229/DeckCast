@@ -2557,48 +2557,67 @@ QRCode.propTypes = propTypes;
 const startSrv = callable("start");
 const stopSrv = callable("stop");
 const getStatus = callable("status");
-const listVideos = callable("list_videos");
+const setupDeps = callable("setup");
 function Content() {
     const [running, setRunning] = SP_REACT.useState(false);
     const [url, setUrl] = SP_REACT.useState("");
-    const [count, setCount] = SP_REACT.useState(0);
+    const [ffmpeg, setFfmpeg] = SP_REACT.useState(true);
+    const [ytdlp, setYtdlp] = SP_REACT.useState(true);
     const [busy, setBusy] = SP_REACT.useState(false);
+    const [msg, setMsg] = SP_REACT.useState("");
     const refresh = async () => {
         const s = await getStatus();
         setRunning(s.running);
         setUrl(s.url ?? `http://${s.ip}:8777`);
-        const v = await listVideos();
-        setCount(v.videos.length);
+        setFfmpeg(s.ffmpeg);
+        setYtdlp(s.ytdlp);
     };
     SP_REACT.useEffect(() => {
         refresh();
     }, []);
     const toggle = async () => {
         setBusy(true);
+        setMsg("");
         try {
-            if (running)
+            if (running) {
                 await stopSrv();
-            else
-                await startSrv();
+            }
+            else {
+                const r = await startSrv();
+                if (r.needs_setup)
+                    setMsg("Сначала установи компоненты ⬇");
+            }
             await refresh();
         }
         finally {
             setBusy(false);
         }
     };
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "DeckCast \u2014 \u0432\u0442\u043E\u0440\u043E\u0439 \u044D\u043A\u0440\u0430\u043D", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: toggle, children: running ? "■ Остановить" : "▶ Запустить стрим" }) }), running && url && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", textAlign: "center", padding: "6px 0 2px" }, children: [SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.6, marginBottom: "6px" }, children: "\u041D\u0430\u0432\u0435\u0434\u0438 \u043A\u0430\u043C\u0435\u0440\u0443 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430:" }), SP_JSX.jsx("div", { style: {
-                                        background: "#fff",
-                                        padding: "10px",
-                                        borderRadius: "10px",
-                                        display: "inline-block",
-                                    }, children: SP_JSX.jsx(QRCode, { value: url, size: 148 }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: {
+    const install = async () => {
+        setBusy(true);
+        setMsg("Скачиваю ffmpeg и yt-dlp… (это разово, ~1–2 мин)");
+        try {
+            const r = await setupDeps();
+            setFfmpeg(r.ffmpeg);
+            setYtdlp(r.ytdlp);
+            setMsg(r.error ? "Ошибка: " + r.error : "Готово ✓ компоненты установлены");
+        }
+        catch (e) {
+            setMsg("Не удалось скачать. Есть ли интернет на Деке?");
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    const needSetup = !ffmpeg || !ytdlp;
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "DeckCast \u2014 \u0432\u0442\u043E\u0440\u043E\u0439 \u044D\u043A\u0440\u0430\u043D", children: [needSetup && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: install, children: "\u2B07 \u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u044B" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "12px", opacity: 0.7, width: "100%" }, children: ["ffmpeg: ", ffmpeg ? "✓" : "—", " \u00B7 yt-dlp: ", ytdlp ? "✓" : "—", " (\u043D\u0443\u0436\u0435\u043D \u0434\u043B\u044F \u0441\u0441\u044B\u043B\u043E\u043A)"] }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !ffmpeg, onClick: toggle, children: running ? "■ Остановить" : "▶ Запустить стрим" }) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "13px", opacity: 0.85, width: "100%" }, children: msg }) })), running && url && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", textAlign: "center", padding: "6px 0 2px" }, children: [SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.6, marginBottom: "6px" }, children: "\u041D\u0430\u0432\u0435\u0434\u0438 \u043A\u0430\u043C\u0435\u0440\u0443 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430:" }), SP_JSX.jsx("div", { style: { background: "#fff", padding: "10px", borderRadius: "10px", display: "inline-block" }, children: SP_JSX.jsx(QRCode, { value: url, size: 148 }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: {
                                 width: "100%",
                                 textAlign: "center",
                                 fontSize: "16px",
                                 fontWeight: 600,
                                 wordBreak: "break-all",
                                 padding: "2px 0 6px",
-                            }, children: url }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: "13px", opacity: 0.7, width: "100%" }, children: ["\u0412\u0438\u0434\u0435\u043E \u0432 \u043F\u0430\u043F\u043A\u0435: ", count, " \u00B7 \u0441\u0441\u044B\u043B\u043A\u0443 (YouTube) \u043C\u043E\u0436\u043D\u043E \u0432\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u043D\u0430 \u0441\u0430\u043C\u043E\u0439 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.55, width: "100%" }, children: "\u0422\u0435\u043B\u0435\u0444\u043E\u043D \u0438 \u0414\u0435\u043A \u2014 \u0432 \u043E\u0434\u043D\u043E\u0439 Wi-Fi. \u0417\u0432\u0443\u043A \u0432 \u043D\u0430\u0443\u0448\u043D\u0438\u043A\u0430\u0445 \u0414\u0435\u043A\u0438, \u043A\u0430\u0440\u0442\u0438\u043D\u043A\u0430 \u043D\u0430 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0435." }) })] }));
+                            }, children: url }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: "12px", opacity: 0.55, width: "100%" }, children: "\u0422\u0435\u043B\u0435\u0444\u043E\u043D \u0438 \u0414\u0435\u043A \u2014 \u0432 \u043E\u0434\u043D\u043E\u0439 Wi-Fi. \u0417\u0432\u0443\u043A \u0432 \u043D\u0430\u0443\u0448\u043D\u0438\u043A\u0430\u0445 \u0414\u0435\u043A\u0438, \u043A\u0430\u0440\u0442\u0438\u043D\u043A\u0430 \u043D\u0430 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0435. \u0421\u0441\u044B\u043B\u043A\u0443 (YouTube) \u0432\u0441\u0442\u0430\u0432\u043B\u044F\u0435\u0448\u044C \u043D\u0430 \u0441\u0430\u043C\u043E\u0439 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0435 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430." }) })] }));
 }
 var index = definePlugin(() => ({
     name: "DeckCast",

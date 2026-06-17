@@ -6,20 +6,13 @@
 ## Что нужно один раз сделать перед установкой
 
 1. **Decky Loader** должен быть установлен на Деке (https://decky.xyz).
-2. **ffmpeg.** Положи статический бинарник в `bin/ffmpeg` внутри плагина:
-   ```bash
-   cd ~/homebrew/plugins/DeckCast/bin
-   curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o ff.tar.xz
-   tar xf ff.tar.xz --strip-components=1 --wildcards '*/ffmpeg'
-   chmod +x ffmpeg && rm ff.tar.xz
-   ```
-3. **yt-dlp** (нужен для ссылок YouTube). Положи бинарник рядом с сервером:
-   ```bash
-   cd ~/homebrew/plugins/DeckCast/bin
-   curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp
-   chmod +x yt-dlp
-   ```
-4. Фильмы клади в `/home/deck/Videos`.
+2. **Компоненты ставятся сами.** При первом открытии плагина нажми
+   **«⬇ Установить компоненты»** — плагин сам скачает `ffmpeg` и `yt-dlp`
+   в свою папку `bin/` (нужен интернет на Деке, ~1–2 минуты, разово).
+3. Фильмы клади в `/home/deck/Videos` (папка создаётся автоматически).
+
+> Ручная установка не нужна. Если интернета на Деке нет — можно положить
+> бинарники `ffmpeg` и `yt-dlp` в `bin/` руками, плагин их подхватит.
 
 ## Два способа смотреть
 

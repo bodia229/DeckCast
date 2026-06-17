@@ -3,5 +3,6 @@ node_modules/
 DeckCast.zip
 bin/__pycache__/
 bin/ffmpeg
+bin/yt-dlp
 __pycache__/
 *.pyc
