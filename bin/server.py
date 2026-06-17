@@ -12,6 +12,7 @@ import sys
 import json
 import socket
 import shutil
+import threading
 import subprocess
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,12 @@ SINK_LABEL = "DeckCast"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts")
 # ──────────────────────────────────────────────────────────────────
+
+# Прямой режим (разгрузка Деки): телефон сам играет видео с Google,
+# Дек проигрывает только аудио-дорожку. Состояние одной сессии:
+_audio_lock = threading.Lock()
+_audio_proc = None
+_audio_url = None   # последняя разобранная аудио-ссылка (для перемотки без повторного yt-dlp)
 
 
 def lan_ip():
@@ -85,6 +92,54 @@ def yt_info(url):
         except ValueError:
             dur = None
     return {"title": title, "duration": dur}
+
+
+def yt_resolve_direct(url, height):
+    """Прямые ссылки: видео-only (H.264, для браузера телефона) и аудио-only."""
+    cap = height if height and height > 0 else 1080
+    vfmt = f"bv*[vcodec^=avc1][height<=?{cap}]/bv*[ext=mp4][height<=?{cap}]/b[height<=?{cap}]"
+    afmt = "ba[ext=m4a]/ba/b"
+    vout = subprocess.run([YTDLP, "-f", vfmt, "-g", url], capture_output=True, text=True, timeout=45)
+    aout = subprocess.run([YTDLP, "-f", afmt, "-g", url], capture_output=True, text=True, timeout=45)
+    v = [l for l in vout.stdout.splitlines() if l.strip()]
+    a = [l for l in aout.stdout.splitlines() if l.strip()]
+    if not v:
+        raise RuntimeError("видео не разобрано: " + (vout.stderr.strip()[:300] or "?"))
+    if not a:
+        raise RuntimeError("аудио не разобрано: " + (aout.stderr.strip()[:300] or "?"))
+    return v[0], a[0]
+
+
+def _stop_audio_locked():
+    global _audio_proc
+    if _audio_proc and _audio_proc.poll() is None:
+        _audio_proc.terminate()
+        try:
+            _audio_proc.wait(timeout=2)
+        except Exception:
+            _audio_proc.kill()
+    _audio_proc = None
+
+
+def start_deck_audio(ss, delay_ms):
+    """Проиграть аудио-дорожку на Деке (прямой режим). Звук пейсит pulse, -re не нужен."""
+    global _audio_proc
+    with _audio_lock:
+        _stop_audio_locked()
+        if not _audio_url:
+            raise RuntimeError("нет аудио — сначала /resolve")
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error"]
+        cmd += _ss_prefix(ss)
+        cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-i", _audio_url]
+        if delay_ms > 0:
+            cmd += ["-filter:a", f"adelay={delay_ms}:all=1"]
+        cmd += ["-f", "pulse", SINK_LABEL]
+        _audio_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def stop_deck_audio():
+    with _audio_lock:
+        _stop_audio_locked()
 
 
 # ─────────────────────────── ffmpeg ───────────────────────────
@@ -198,6 +253,37 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(yt_info(u))
             except Exception as e:
                 return self._send_json({"title": "", "duration": None, "error": str(e)[:400]}, 200)
+        if route == "/resolve":
+            # прямой режим: вернуть телефону видео-ссылку, аудио запомнить для Деки
+            global _audio_url
+            u = qs.get("url", [""])[0]
+            try:
+                height = int(qs.get("q", ["720"])[0])
+            except ValueError:
+                height = 720
+            try:
+                v, a = yt_resolve_direct(u, height)
+                _audio_url = a
+                return self._send_json({"video": v})
+            except Exception as e:
+                return self._send_json({"video": "", "error": str(e)[:400]}, 200)
+        if route == "/audio":
+            try:
+                ss = float(qs.get("ss", ["0"])[0])
+            except ValueError:
+                ss = 0.0
+            try:
+                delay = int(float(qs.get("delay", ["800"])[0]))
+            except ValueError:
+                delay = 800
+            try:
+                start_deck_audio(ss, delay)
+                return self._send_json({"ok": True})
+            except Exception as e:
+                return self._send_json({"ok": False, "error": str(e)[:400]}, 200)
+        if route == "/audio_stop":
+            stop_deck_audio()
+            return self._send_json({"ok": True})
         if route == "/stream":
             return self._do_stream(qs)
         self.send_error(404)

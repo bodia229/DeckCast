@@ -8,10 +8,13 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; background: #0b0f17; color: #e8eef7; font-family: system-ui, sans-serif; }
-  header { padding: 13px 16px; font-weight: 600; font-size: 17px; background: #131a26;
-           position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; }
+  header { padding: 11px 14px; background: #131a26; position: sticky; top: 0; z-index: 5;
+           display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header .title { font-weight: 600; font-size: 17px; }
   header select { background: #0e1622; color: #e8eef7; border: 1px solid #283549;
                   border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+  .opts { display: flex; align-items: center; gap: 12px; font-size: 12px; opacity: .9; }
+  .sw { display: flex; align-items: center; gap: 5px; }
   .wrap { padding: 10px 14px 32px; }
   video { width: 100%; background: #000; border-radius: 12px; display: block; margin-top: 4px; }
 
@@ -51,22 +54,26 @@
 </head>
 <body>
 <header>
-  <span>📺 DeckCast</span>
-  <label style="font-size:12px;opacity:.8">Качество
-    <select id="q">
-      <option value="0">Авто</option>
-      <option value="1080">1080p</option>
-      <option value="720" selected>720p</option>
-      <option value="480">480p</option>
-    </select>
-  </label>
+  <span class="title">📺 DeckCast</span>
+  <div class="opts">
+    <label class="sw" title="Телефон сам играет видео — Дек почти не грузится">
+      <input type="checkbox" id="direct"> ⚡ Разгрузка
+    </label>
+    <label>Кач-во
+      <select id="q">
+        <option value="0">Авто</option>
+        <option value="1080">1080p</option>
+        <option value="720" selected>720p</option>
+        <option value="480">480p</option>
+      </select>
+    </label>
+  </div>
 </header>
 <div class="wrap">
 
   <video id="player" controls playsinline></video>
   <div id="status">Найди видео или вставь ссылку 👇</div>
 
-  <!-- Синхрон звука: кнопки точной подгонки + ползунок -->
   <div class="sync">
     <label>🔉 Синхрон</label>
     <button class="nudge" id="dminus">−100</button>
@@ -76,7 +83,6 @@
   <input type="range" id="delay" min="0" max="3000" step="50" value="800">
   <div class="hint">Звук отстаёт от картинки — увеличь. Опережает — уменьши.</div>
 
-  <!-- Поиск -->
   <div class="sec">Поиск на YouTube</div>
   <div class="search">
     <input id="q2" type="search" placeholder="Запрос или ссылка YouTube…" enterkeyhint="search">
@@ -94,129 +100,148 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const player = $('player'), status = $('status');
-const delayEl = $('delay'), dval = $('dval'), qEl = $('q');
+const delayEl = $('delay'), dval = $('dval'), qEl = $('q'), directEl = $('direct');
 
-let src = null, title = '', mp = null, wakeLock = null, reloadTimer = null;
+let mode = 'transcode';          // 'direct' | 'transcode'
+let curSrc = null, curTitle = '';
+let mp = null, wakeLock = null, reloadTimer = null, audioTimer = null;
+let triedFallback = false, pendingSeek = 0;
 
-// ── запоминание настроек ──
 const LS = window.localStorage;
-delayEl.value = LS.getItem('dc_delay') || '800';
-dval.textContent = delayEl.value;
+delayEl.value = LS.getItem('dc_delay') || '800'; dval.textContent = delayEl.value;
 if (LS.getItem('dc_q') !== null) qEl.value = LS.getItem('dc_q');
+directEl.checked = (LS.getItem('dc_direct') ?? '1') === '1';
 
-const fmt = (s) => {
-  if (s == null || isNaN(s)) return '';
-  s = Math.max(0, Math.floor(s));
-  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), x = s%60;
-  return (h?h+':':'') + (h?String(m).padStart(2,'0'):m) + ':' + String(x).padStart(2,'0');
-};
-const setStatus = (txt, busy) => { status.innerHTML = (busy ? '<span class="spin"></span>' : '') + txt; };
+const fmt = (s) => { if (s==null||isNaN(s)) return ''; s=Math.max(0,Math.floor(s));
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;
+  return (h?h+':':'')+(h?String(m).padStart(2,'0'):m)+':'+String(x).padStart(2,'0'); };
+const setStatus = (t,b) => { status.innerHTML = (b?'<span class="spin"></span>':'')+t; };
 const looksLikeUrl = (s) => /^https?:\/\//i.test(s) || /youtu\.?be/i.test(s);
-
-function streamUrl() {
-  let q = 'delay=' + delayEl.value + '&q=' + qEl.value;
-  if (src.url) q += '&url=' + encodeURIComponent(src.url);
-  else q += '&file=' + encodeURIComponent(src.file);
-  return '/stream?' + q;
-}
+const escapeHtml = (s)=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 // ── экран не гаснет ──
-async function keepAwake() {
-  try { if (navigator.wakeLock && !wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
-}
-async function releaseAwake() { try { if (wakeLock) { await wakeLock.release(); wakeLock = null; } } catch (e) {} }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !player.paused) keepAwake(); });
-player.addEventListener('play', keepAwake);
-player.addEventListener('pause', releaseAwake);
+async function keepAwake(){ try{ if(navigator.wakeLock&&!wakeLock) wakeLock=await navigator.wakeLock.request('screen'); }catch(e){} }
+async function releaseAwake(){ try{ if(wakeLock){ await wakeLock.release(); wakeLock=null; } }catch(e){} }
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&!player.paused) keepAwake(); });
 
-function playSource(s, t) {
-  src = s; title = t || (s.url ? 'ссылку' : s.file);
-  setStatus('Загрузка: ' + escapeHtml(title), true);
+// ── управление аудио Деки (только прямой режим) ──
+function syncDeckAudio(){
+  clearTimeout(audioTimer);
+  audioTimer = setTimeout(() => {
+    fetch('/audio?ss=' + (player.currentTime||0).toFixed(1) + '&delay=' + delayEl.value).catch(()=>{});
+  }, 250);
+}
+const stopDeckAudio = () => fetch('/audio_stop').catch(()=>{});
+
+player.addEventListener('play',  ()=>{ keepAwake(); if(mode==='direct') syncDeckAudio(); });
+player.addEventListener('pause', ()=>{ releaseAwake(); if(mode==='direct') stopDeckAudio(); });
+player.addEventListener('seeked',()=>{ if(mode==='direct'&&!player.paused) syncDeckAudio(); });
+player.addEventListener('error', ()=>{ if(mode==='direct') fallbackToTranscode(); });
+
+// ── выбор источника ──
+function playSource(s, t){
+  curSrc = s; curTitle = t || (s.url ? 'ссылку' : s.file);
+  triedFallback = false;
+  if (s.url && directEl.checked) playDirect(s.url);
+  else playTranscode(s);
+}
+
+// Прямой режим: телефон играет видео сам, Дек — только звук
+async function playDirect(url){
+  mode = 'direct';
+  setStatus('Готовлю прямой поток: ' + escapeHtml(curTitle), true);
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (mp) { mp.destroy(); mp = null; }
-  if (!window.mpegts || !mpegts.isSupported()) { setStatus('Нужен Chrome на Android.'); return; }
-  mp = mpegts.createPlayer(
-    { type: 'mpegts', isLive: true, url: streamUrl() },
-    {                                   // низкая задержка на телефоне
-      isLive: true,
-      enableStashBuffer: false,
-      stashInitialSize: 128,
-      liveBufferLatencyChasing: true,
-      liveBufferLatencyMaxLatency: 1.2,
-      liveBufferLatencyMinRemain: 0.3,
-      lazyLoad: false,
-    });
-  mp.attachMediaElement(player);
-  mp.on(mpegts.Events.ERROR, () => setStatus('Ошибка потока. Проверь ссылку / yt-dlp на Деке.'));
-  mp.load();
-  mp.play().then(() => { setStatus('▶ ' + escapeHtml(title)); keepAwake(); }).catch(()=>{});
-}
-
-// перезапуск потока с небольшой задержкой (чтобы частые нажатия не плодили потоки)
-function reloadSoon() {
-  if (!src) return;
-  clearTimeout(reloadTimer);
-  reloadTimer = setTimeout(() => playSource(src, title), 350);
-}
-function setDelay(v) {
-  v = Math.max(0, Math.min(3000, v));
-  delayEl.value = v; dval.textContent = v; LS.setItem('dc_delay', v);
-}
-
-// ── синхрон ──
-$('dminus').onclick = () => { setDelay(+delayEl.value - 100); reloadSoon(); };
-$('dplus').onclick  = () => { setDelay(+delayEl.value + 100); reloadSoon(); };
-delayEl.addEventListener('input', () => { dval.textContent = delayEl.value; LS.setItem('dc_delay', delayEl.value); });
-delayEl.addEventListener('change', reloadSoon);
-qEl.addEventListener('change', () => { LS.setItem('dc_q', qEl.value); reloadSoon(); });
-
-// поиск / ссылка
-$('go').onclick = onSubmit;
-$('q2').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSubmit(); });
-function onSubmit() {
-  const v = $('q2').value.trim();
-  if (!v) return;
-  if (looksLikeUrl(v)) { playSource({ url: v }); $('results').innerHTML = ''; }
-  else doSearch(v);
-}
-
-async function doSearch(q) {
-  setStatus('Ищу: ' + escapeHtml(q) + ' …', true);
-  $('go').disabled = true;
-  $('results').innerHTML = '';
   try {
-    const j = await (await fetch('/search?q=' + encodeURIComponent(q))).json();
-    if (j.error) { setStatus('Поиск: ' + escapeHtml(j.error)); return; }
-    setStatus('Найдено: ' + j.results.length);
-    const box = $('results');
-    for (const v of j.results) {
-      const el = document.createElement('div');
-      el.className = 'card';
-      el.innerHTML =
-        '<img src="' + v.thumb + '" loading="lazy">' +
-        '<div class="meta"><div class="t">' + escapeHtml(v.title) + '</div>' +
-        '<div class="c">' + escapeHtml(v.channel || '') + (v.duration ? ' · ' + fmt(v.duration) : '') + '</div></div>';
-      el.onclick = () => playSource({ url: 'https://www.youtube.com/watch?v=' + v.id }, v.title);
+    const j = await (await fetch('/resolve?url=' + encodeURIComponent(url) + '&q=' + qEl.value)).json();
+    if (!j.video) { setStatus('Прямой режим: ' + escapeHtml(j.error||'не вышло')); return fallbackToTranscode(); }
+    player.pause(); player.removeAttribute('src'); player.srcObject = null;
+    player.src = j.video; player.load();
+    const onMeta = () => { player.removeEventListener('loadedmetadata', onMeta);
+      if (pendingSeek > 0) { try { player.currentTime = pendingSeek; } catch(e){} pendingSeek = 0; }
+      player.play().catch(()=>{}); };
+    player.addEventListener('loadedmetadata', onMeta);
+    setStatus('▶ ' + escapeHtml(curTitle) + '  ·  ⚡ Дек разгружен');
+    keepAwake();
+  } catch (e) { fallbackToTranscode(); }
+}
+
+// Обычный режим: Дек перекодирует и шлёт видео+звук
+function playTranscode(s){
+  mode = 'transcode';
+  stopDeckAudio();
+  setStatus('Загрузка: ' + escapeHtml(curTitle), true);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (mp) { mp.destroy(); mp = null; }
+  player.pause(); player.removeAttribute('src');
+  if (!window.mpegts || !mpegts.isSupported()) { setStatus('Нужен Chrome на Android.'); return; }
+  let q = 'delay=' + delayEl.value + '&q=' + qEl.value;
+  q += s.url ? '&url=' + encodeURIComponent(s.url) : '&file=' + encodeURIComponent(s.file);
+  mp = mpegts.createPlayer({ type:'mpegts', isLive:true, url:'/stream?'+q },
+    { isLive:true, enableStashBuffer:false, stashInitialSize:128,
+      liveBufferLatencyChasing:true, liveBufferLatencyMaxLatency:1.2, liveBufferLatencyMinRemain:0.3, lazyLoad:false });
+  mp.attachMediaElement(player);
+  mp.on(mpegts.Events.ERROR, ()=> setStatus('Ошибка потока. Проверь ссылку / yt-dlp на Деке.'));
+  mp.load();
+  mp.play().then(()=>{ setStatus('▶ ' + escapeHtml(curTitle)); keepAwake(); }).catch(()=>{});
+}
+
+function fallbackToTranscode(){
+  if (triedFallback || !curSrc) return;
+  triedFallback = true;
+  setStatus('Прямой режим не пошёл — переключаюсь на обычный…');
+  playTranscode(curSrc);
+}
+
+// ── настройки ──
+function setDelay(v){ v=Math.max(0,Math.min(3000,v)); delayEl.value=v; dval.textContent=v; LS.setItem('dc_delay',v); }
+$('dminus').onclick = ()=>{ setDelay(+delayEl.value-100); afterDelayChange(); };
+$('dplus').onclick  = ()=>{ setDelay(+delayEl.value+100); afterDelayChange(); };
+delayEl.addEventListener('input', ()=>{ dval.textContent=delayEl.value; LS.setItem('dc_delay',delayEl.value); });
+delayEl.addEventListener('change', afterDelayChange);
+function afterDelayChange(){ if(!curSrc) return; if(mode==='direct'){ if(!player.paused) syncDeckAudio(); } else reloadSoon(); }
+
+function reloadSoon(){ if(!curSrc) return; clearTimeout(reloadTimer); reloadTimer=setTimeout(()=>playTranscode(curSrc),350); }
+
+qEl.addEventListener('change', ()=>{ LS.setItem('dc_q',qEl.value);
+  if(!curSrc) return; pendingSeek = (mode==='direct' ? player.currentTime : 0); playSource(curSrc, curTitle); });
+directEl.addEventListener('change', ()=>{ LS.setItem('dc_direct', directEl.checked?'1':'0');
+  if(curSrc){ pendingSeek = (curSrc.url ? player.currentTime||0 : 0); playSource(curSrc, curTitle); } });
+
+// ── поиск / ссылка ──
+$('go').onclick = onSubmit;
+$('q2').addEventListener('keydown', e=>{ if(e.key==='Enter') onSubmit(); });
+function onSubmit(){ const v=$('q2').value.trim(); if(!v) return;
+  if(looksLikeUrl(v)){ playSource({url:v}); $('results').innerHTML=''; } else doSearch(v); }
+
+async function doSearch(q){
+  setStatus('Ищу: '+escapeHtml(q)+' …', true); $('go').disabled=true; $('results').innerHTML='';
+  try {
+    const j = await (await fetch('/search?q='+encodeURIComponent(q))).json();
+    if (j.error){ setStatus('Поиск: '+escapeHtml(j.error)); return; }
+    setStatus('Найдено: '+j.results.length);
+    const box=$('results');
+    for (const v of j.results){
+      const el=document.createElement('div'); el.className='card';
+      el.innerHTML='<img src="'+v.thumb+'" loading="lazy"><div class="meta"><div class="t">'+escapeHtml(v.title)+
+        '</div><div class="c">'+escapeHtml(v.channel||'')+(v.duration?' · '+fmt(v.duration):'')+'</div></div>';
+      el.onclick=()=>playSource({url:'https://www.youtube.com/watch?v='+v.id}, v.title);
       box.appendChild(el);
     }
-  } catch (e) { setStatus('Не удалось выполнить поиск.'); }
-  finally { $('go').disabled = false; }
+  } catch(e){ setStatus('Не удалось выполнить поиск.'); }
+  finally { $('go').disabled=false; }
 }
-function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
-async function loadList() {
+async function loadList(){
   try {
-    const j = await (await fetch('/list')).json();
-    const box = $('list');
-    if (!j.videos.length) { box.innerHTML = '<div class="hint">Папка ~/Videos пуста.</div>'; return; }
-    for (const name of j.videos) {
-      const b = document.createElement('div');
-      b.className = 'card'; b.style.padding = '12px';
-      b.innerHTML = '<div class="meta"><div class="t">🎬 ' + escapeHtml(name) + '</div></div>';
-      b.onclick = () => playSource({ file: name }, name);
-      box.appendChild(b);
+    const j = await (await fetch('/list')).json(); const box=$('list');
+    if(!j.videos.length){ box.innerHTML='<div class="hint">Папка ~/Videos пуста.</div>'; return; }
+    for(const name of j.videos){
+      const b=document.createElement('div'); b.className='card'; b.style.padding='12px';
+      b.innerHTML='<div class="meta"><div class="t">🎬 '+escapeHtml(name)+'</div></div>';
+      b.onclick=()=>playSource({file:name}, name); box.appendChild(b);
     }
-  } catch (e) {}
+  } catch(e){}
 }
 loadList();
 </script>
