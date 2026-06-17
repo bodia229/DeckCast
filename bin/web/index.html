@@ -18,12 +18,13 @@
   .wrap { padding: 10px 14px 32px; }
   video { width: 100%; background: #000; border-radius: 12px; display: block; margin-top: 4px; }
 
-  .sync { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 13px; }
+  .sync { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 13px; flex-wrap: wrap; }
   .sync label { opacity: .8; }
   .sync .val { font-variant-numeric: tabular-nums; min-width: 70px; text-align: center; }
   .nudge { background: #1b2536; border: 1px solid #283549; color: #e8eef7;
            padding: 7px 10px; border-radius: 8px; font-size: 13px; }
   .nudge:active { background: #243248; }
+  .nudge[disabled] { opacity: .4; }
   input[type=range] { width: 100%; accent-color: #2563eb; }
 
   .search { display: flex; gap: 8px; margin: 6px 0; }
@@ -75,13 +76,13 @@
   <div id="status">Найди видео или вставь ссылку 👇</div>
 
   <div class="sync">
-    <label>🔉 Синхрон</label>
+    <label class="sw"><input type="checkbox" id="auto"> 🤖 Авто-синхрон</label>
     <button class="nudge" id="dminus">−100</button>
     <span class="val"><span id="dval">800</span> мс</span>
     <button class="nudge" id="dplus">+100</button>
   </div>
   <input type="range" id="delay" min="0" max="3000" step="50" value="800">
-  <div class="hint">Звук отстаёт от картинки — увеличь. Опережает — уменьши.</div>
+  <div class="hint" id="synchint">Звук отстаёт от картинки — увеличь. Опережает — уменьши.</div>
 
   <div class="sec">Поиск на YouTube</div>
   <div class="search">
@@ -100,17 +101,19 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const player = $('player'), status = $('status');
-const delayEl = $('delay'), dval = $('dval'), qEl = $('q'), directEl = $('direct');
+const delayEl = $('delay'), dval = $('dval'), qEl = $('q'), directEl = $('direct'), autoEl = $('auto');
 
-let mode = 'transcode';          // 'direct' | 'transcode'
+let mode = 'transcode';
 let curSrc = null, curTitle = '';
 let mp = null, wakeLock = null, reloadTimer = null, audioTimer = null;
 let triedFallback = false, pendingSeek = 0;
+let syncTimer = null, clockOff = 0, graceUntil = 0;
 
 const LS = window.localStorage;
 delayEl.value = LS.getItem('dc_delay') || '800'; dval.textContent = delayEl.value;
 if (LS.getItem('dc_q') !== null) qEl.value = LS.getItem('dc_q');
 directEl.checked = (LS.getItem('dc_direct') ?? '1') === '1';
+autoEl.checked   = (LS.getItem('dc_auto') ?? '1') === '1';
 
 const fmt = (s) => { if (s==null||isNaN(s)) return ''; s=Math.max(0,Math.floor(s));
   const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;
@@ -119,23 +122,65 @@ const setStatus = (t,b) => { status.innerHTML = (b?'<span class="spin"></span>':
 const looksLikeUrl = (s) => /^https?:\/\//i.test(s) || /youtu\.?be/i.test(s);
 const escapeHtml = (s)=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+function updateSyncUi(){
+  const auto = autoEl.checked;
+  $('synchint').textContent = auto
+    ? 'Авто держит синхрон сам (без дрейфа). Если губы не совпадают — разок крути ±100.'
+    : 'Звук отстаёт от картинки — увеличь. Опережает — уменьши.';
+}
+updateSyncUi();
+
 // ── экран не гаснет ──
 async function keepAwake(){ try{ if(navigator.wakeLock&&!wakeLock) wakeLock=await navigator.wakeLock.request('screen'); }catch(e){} }
 async function releaseAwake(){ try{ if(wakeLock){ await wakeLock.release(); wakeLock=null; } }catch(e){} }
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&!player.paused) keepAwake(); });
 
-// ── управление аудио Деки (только прямой режим) ──
-function syncDeckAudio(){
+// ── авто-синхрон: видео догоняет звук Деки ──
+async function estimateClock(){
+  let best = 1e9;
+  for (let i=0;i<4;i++){
+    const t0 = performance.now();
+    try {
+      const j = await (await fetch('/now')).json();
+      const t1 = performance.now(), rtt = t1 - t0;
+      if (rtt < best){ best = rtt; clockOff = j.t - (t0 + rtt/2); } // serverMs - phoneMs
+    } catch(e){}
+  }
+}
+const serverNowMs = () => performance.now() + clockOff;
+
+async function syncTick(){
+  if (mode!=='direct' || player.paused || !autoEl.checked) return;
+  if (performance.now() < graceUntil) return;     // дать звуку стабилизироваться после старта/перемотки
+  try {
+    const j = await (await fetch('/audio_pos')).json();
+    if (!j.playing) return;
+    const audioPosNow = j.pos + (serverNowMs() - j.t)/1000;   // позиция звука сейчас
+    const target = audioPosNow - (+delayEl.value)/1000;        // доводка ползунком
+    const diff = target - player.currentTime;
+    if (Math.abs(diff) > 0.7){ player.currentTime = Math.max(0, target); player.playbackRate = 1; }
+    else if (diff > 0.06){ player.playbackRate = 1.05; }       // видео отстаёт — чуть ускорить
+    else if (diff < -0.06){ player.playbackRate = 0.95; }      // видео спешит — чуть замедлить
+    else { player.playbackRate = 1; }
+  } catch(e){}
+}
+function startSyncLoop(){ stopSyncLoop(); estimateClock().then(()=>{ syncTimer = setInterval(syncTick, 1500); }); }
+function stopSyncLoop(){ if(syncTimer){ clearInterval(syncTimer); syncTimer=null; } player.playbackRate = 1; }
+
+// ── аудио Деки (прямой режим) ──
+function startDeckAudio(){
+  const d = autoEl.checked ? 0 : delayEl.value;   // в авто звук без задержки, выравнивает телефон
   clearTimeout(audioTimer);
   audioTimer = setTimeout(() => {
-    fetch('/audio?ss=' + (player.currentTime||0).toFixed(1) + '&delay=' + delayEl.value).catch(()=>{});
-  }, 250);
+    fetch('/audio?ss=' + (player.currentTime||0).toFixed(1) + '&delay=' + d).catch(()=>{});
+    graceUntil = performance.now() + 1600;
+  }, 200);
 }
 const stopDeckAudio = () => fetch('/audio_stop').catch(()=>{});
 
-player.addEventListener('play',  ()=>{ keepAwake(); if(mode==='direct') syncDeckAudio(); });
-player.addEventListener('pause', ()=>{ releaseAwake(); if(mode==='direct') stopDeckAudio(); });
-player.addEventListener('seeked',()=>{ if(mode==='direct'&&!player.paused) syncDeckAudio(); });
+player.addEventListener('play',  ()=>{ keepAwake(); if(mode==='direct'){ startDeckAudio(); if(autoEl.checked) startSyncLoop(); } });
+player.addEventListener('pause', ()=>{ releaseAwake(); if(mode==='direct'){ stopDeckAudio(); stopSyncLoop(); } });
+player.addEventListener('seeked',()=>{ if(mode==='direct'&&!player.paused){ startDeckAudio(); } });
 player.addEventListener('error', ()=>{ if(mode==='direct') fallbackToTranscode(); });
 
 // ── выбор источника ──
@@ -146,7 +191,6 @@ function playSource(s, t){
   else playTranscode(s);
 }
 
-// Прямой режим: телефон играет видео сам, Дек — только звук
 async function playDirect(url){
   mode = 'direct';
   setStatus('Готовлю прямой поток: ' + escapeHtml(curTitle), true);
@@ -166,10 +210,9 @@ async function playDirect(url){
   } catch (e) { fallbackToTranscode(); }
 }
 
-// Обычный режим: Дек перекодирует и шлёт видео+звук
 function playTranscode(s){
   mode = 'transcode';
-  stopDeckAudio();
+  stopSyncLoop(); stopDeckAudio();
   setStatus('Загрузка: ' + escapeHtml(curTitle), true);
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (mp) { mp.destroy(); mp = null; }
@@ -199,7 +242,11 @@ $('dminus').onclick = ()=>{ setDelay(+delayEl.value-100); afterDelayChange(); };
 $('dplus').onclick  = ()=>{ setDelay(+delayEl.value+100); afterDelayChange(); };
 delayEl.addEventListener('input', ()=>{ dval.textContent=delayEl.value; LS.setItem('dc_delay',delayEl.value); });
 delayEl.addEventListener('change', afterDelayChange);
-function afterDelayChange(){ if(!curSrc) return; if(mode==='direct'){ if(!player.paused) syncDeckAudio(); } else reloadSoon(); }
+function afterDelayChange(){
+  if(!curSrc) return;
+  if(mode==='direct'){ if(autoEl.checked){ /* подхватит цикл сам */ } else if(!player.paused) startDeckAudio(); }
+  else reloadSoon();
+}
 
 function reloadSoon(){ if(!curSrc) return; clearTimeout(reloadTimer); reloadTimer=setTimeout(()=>playTranscode(curSrc),350); }
 
@@ -207,6 +254,8 @@ qEl.addEventListener('change', ()=>{ LS.setItem('dc_q',qEl.value);
   if(!curSrc) return; pendingSeek = (mode==='direct' ? player.currentTime : 0); playSource(curSrc, curTitle); });
 directEl.addEventListener('change', ()=>{ LS.setItem('dc_direct', directEl.checked?'1':'0');
   if(curSrc){ pendingSeek = (curSrc.url ? player.currentTime||0 : 0); playSource(curSrc, curTitle); } });
+autoEl.addEventListener('change', ()=>{ LS.setItem('dc_auto', autoEl.checked?'1':'0'); updateSyncUi();
+  if(mode==='direct' && !player.paused){ startDeckAudio(); if(autoEl.checked) startSyncLoop(); else stopSyncLoop(); } });
 
 // ── поиск / ссылка ──
 $('go').onclick = onSubmit;

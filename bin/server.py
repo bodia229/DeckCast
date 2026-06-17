@@ -10,6 +10,7 @@ DeckCast — стримит видео с Steam Deck на телефон по л
 import os
 import sys
 import json
+import time
 import socket
 import shutil
 import threading
@@ -33,6 +34,8 @@ VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts")
 _audio_lock = threading.Lock()
 _audio_proc = None
 _audio_url = None   # последняя разобранная аудио-ссылка (для перемотки без повторного yt-dlp)
+_audio_base_ss = 0.0   # позиция (сек), с которой стартовал звук
+_audio_base_t = 0.0    # время старта звука (monotonic) — для авто-синхрона
 
 
 def lan_ip():
@@ -123,7 +126,7 @@ def _stop_audio_locked():
 
 def start_deck_audio(ss, delay_ms):
     """Проиграть аудио-дорожку на Деке (прямой режим). Звук пейсит pulse, -re не нужен."""
-    global _audio_proc
+    global _audio_proc, _audio_base_ss, _audio_base_t
     with _audio_lock:
         _stop_audio_locked()
         if not _audio_url:
@@ -135,6 +138,8 @@ def start_deck_audio(ss, delay_ms):
             cmd += ["-filter:a", f"adelay={delay_ms}:all=1"]
         cmd += ["-f", "pulse", SINK_LABEL]
         _audio_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _audio_base_ss = ss
+        _audio_base_t = time.monotonic()
 
 
 def stop_deck_audio():
@@ -284,6 +289,15 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/audio_stop":
             stop_deck_audio()
             return self._send_json({"ok": True})
+        if route == "/now":
+            # для синхронизации часов телефон↔Дек
+            return self._send_json({"t": int(time.monotonic() * 1000)})
+        if route == "/audio_pos":
+            # текущая позиция звука на Деке (для авто-синхрона видео на телефоне)
+            with _audio_lock:
+                playing = _audio_proc is not None and _audio_proc.poll() is None
+                pos = _audio_base_ss + (time.monotonic() - _audio_base_t) if playing else _audio_base_ss
+            return self._send_json({"playing": playing, "pos": pos, "t": int(time.monotonic() * 1000)})
         if route == "/stream":
             return self._do_stream(qs)
         self.send_error(404)
